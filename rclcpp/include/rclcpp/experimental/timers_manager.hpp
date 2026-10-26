@@ -428,6 +428,20 @@ public:
     }
 
     /**
+     * @brief Check if any of the owned timers is not cancelled.
+     * @return true if at least one timer is not cancelled.
+     */
+    bool has_active_timer() const
+    {
+      for (const TimerPtr & t : owned_heap_) {
+        if (!t->is_canceled()) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    /**
      * @brief Get the number of timers that are currently ready.
      * @return size_t number of ready timers.
      */
@@ -522,6 +536,18 @@ private:
    * This function is not thread safe, acquire the timers_mutex_ before calling it.
    */
   std::optional<std::chrono::nanoseconds> get_head_timeout_unsafe();
+
+  /**
+   * @brief Restores the heap property of the timers heap, e.g. after a timer was cancelled.
+   * This function is not thread safe, acquire the timers_mutex_ before calling it.
+   */
+  void heapify_unsafe();
+
+  /**
+   * @brief Returns true if any stored timer is not cancelled.
+   * This function is not thread safe, acquire the timers_mutex_ before calling it.
+   */
+  bool has_active_timer_unsafe();
 
   /**
    * @brief Executes all the timers currently ready when the function is invoked

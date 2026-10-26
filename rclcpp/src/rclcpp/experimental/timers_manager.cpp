@@ -256,30 +256,24 @@ void TimersManager::run_timers()
     // Lock mutex
     std::unique_lock<std::mutex> lock(timers_mutex_);
 
+    // TimerBase::cancel() does not notify this thread. A timer cancelled anywhere but the head
+    // reports nanoseconds::max() and execute_ready_timers_unsafe() only sifts the head, so the
+    // timers below it would never reach the head again. Restore the heap before every pass.
+    this->heapify_unsafe();
+
     std::optional<std::chrono::nanoseconds> time_to_sleep = get_head_timeout_unsafe();
 
-    // If head timer was cancelled, try to reheap and get a new head.
-    // This avoids an edge condition where head timer is cancelled, but other
-    // valid timers remain in the heap.
-    if (!time_to_sleep.has_value()) {
-      // Re-heap to (possibly) move cancelled timer from head of heap. If
-      // entire heap is cancelled, this will still result in a nullopt.
-      TimersHeap locked_heap = weak_timers_heap_.validate_and_lock();
-      locked_heap.heapify();
-      weak_timers_heap_.store(locked_heap);
-      time_to_sleep = get_head_timeout_unsafe();
-    }
-
-    // If no timers, or all timers cancelled, wait for an update.
+    // A head cancelled between the checks in get_head_timeout_unsafe() also reports max().
     if (!time_to_sleep.has_value() || (time_to_sleep.value() == std::chrono::nanoseconds::max()) ) {
-      // Wait until notification that timers have been updated
+      if (this->has_active_timer_unsafe()) {
+        continue;
+      }
+      // No timers, or all timers cancelled: wait until notification that timers have been updated
       timers_cv_.wait(lock, [this]() {return timers_updated_;});
 
       // Re-heap in case ordering changed due to a cancelled timer
       // re-activating.
-      TimersHeap locked_heap = weak_timers_heap_.validate_and_lock();
-      locked_heap.heapify();
-      weak_timers_heap_.store(locked_heap);
+      this->heapify_unsafe();
     } else if (time_to_sleep.value() != std::chrono::nanoseconds::zero()) {
       // If time_to_sleep is zero, we immediately execute. Otherwise, wait
       // until timeout or notification that timers have been updated
@@ -292,6 +286,18 @@ void TimersManager::run_timers()
     // Execute timers
     this->execute_ready_timers_unsafe();
   }
+}
+
+void TimersManager::heapify_unsafe()
+{
+  TimersHeap locked_heap = weak_timers_heap_.validate_and_lock();
+  locked_heap.heapify();
+  weak_timers_heap_.store(locked_heap);
+}
+
+bool TimersManager::has_active_timer_unsafe()
+{
+  return weak_timers_heap_.validate_and_lock().has_active_timer();
 }
 
 void TimersManager::clear()

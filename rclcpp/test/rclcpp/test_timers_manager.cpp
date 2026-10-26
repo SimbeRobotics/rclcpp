@@ -438,3 +438,49 @@ TEST_F(TestTimersManager, check_one_timer_cancel_doesnt_affect_other_timers)
 
   timers_manager->stop();
 }
+
+TEST_F(TestTimersManager, cancelled_timer_inside_heap_doesnt_starve_other_timers)
+{
+  auto timers_manager = std::make_shared<TimersManager>(
+    rclcpp::contexts::get_global_default_context());
+
+  std::atomic<size_t> t_head_runs = 0;
+  auto t_head = TimerT::make_shared(
+    20ms, [&t_head_runs]() {t_head_runs++;}, rclcpp::contexts::get_global_default_context());
+  auto t_cancel_1 = TimerT::make_shared(
+    100ms, []() {}, rclcpp::contexts::get_global_default_context());
+  auto t_cancel_2 = TimerT::make_shared(
+    110ms, []() {}, rclcpp::contexts::get_global_default_context());
+  std::atomic<size_t> t_leaf_runs = 0;
+  auto t_leaf = TimerT::make_shared(
+    400ms, [&t_leaf_runs]() {t_leaf_runs++;}, rclcpp::contexts::get_global_default_context());
+
+  // Added in order of their next call, the heap is [t_head, t_cancel_1, t_cancel_2, t_leaf]:
+  // t_leaf is a child of t_cancel_1, and the head's children are the two timers cancelled below.
+  timers_manager->add_timer(t_head);
+  timers_manager->add_timer(t_cancel_1);
+  timers_manager->add_timer(t_cancel_2);
+  timers_manager->add_timer(t_leaf);
+  timers_manager->start();
+
+  // Cancel both before they are due, like a callback on the executor thread would
+  std::this_thread::sleep_for(50ms);
+  t_cancel_1->cancel();
+  t_cancel_2->cancel();
+
+  const size_t num_t_leaf_runs = 3;
+  auto loop_start_time = std::chrono::high_resolution_clock::now();
+  while (t_leaf_runs < num_t_leaf_runs) {
+    auto now = std::chrono::high_resolution_clock::now();
+    if (now - loop_start_time >= std::chrono::seconds(10)) {
+      break;
+    }
+    std::this_thread::sleep_for(10ms);
+  }
+
+  // t_head keeps running either way; t_leaf starves if the cancelled timers stay above it
+  EXPECT_GT(t_head_runs, 0u);
+  EXPECT_GE(t_leaf_runs, num_t_leaf_runs);
+
+  timers_manager->stop();
+}
